@@ -4,12 +4,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>白磁の匙</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;500;600&family=Shippori+Mincho:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css"/>
 </head>
 <body>
   <div id="gameContainer">
     <!-- 背景 -->
     <div id="background"></div>
+
+    <!-- 暗転オーバーレイ（恐怖演出用） -->
+    <div id="darkOverlay"></div>
 
     <!-- テキスト -->
     <div id="textArea">
@@ -19,6 +25,22 @@
 
     <!-- 選択肢 -->
     <div id="choiceArea"></div>
+
+    <!-- パラメータ表示（簡易版） -->
+    <div id="paramPanel" class="hidden">
+      <div class="param-item">
+        <span class="param-label">証拠</span>
+        <span class="param-value" id="paramEvid">0</span>
+      </div>
+      <div class="param-item">
+        <span class="param-label">信頼</span>
+        <span class="param-value" id="paramTrust">0</span>
+      </div>
+      <div class="param-item">
+        <span class="param-label">影</span>
+        <span class="param-value" id="paramShadow">0</span>
+      </div>
+    </div>
 
     <!-- 操作 -->
     <div id="controls">
