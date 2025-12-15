@@ -35,44 +35,118 @@ const bgmEl = new Audio();
 bgmEl.loop = true;
 bgmEl.preload = 'auto';
 let bgmKey = '';
+let fadeOutTimer = null;
+let fadeInTimer = null;
+let isBGMChanging = false; // BGM切り替え処理中フラグ
+let pendingBGMKey = null;   // 待機中のBGMキー
 
 function playBGM(key){
   if (!key || !BGM[key]) return;
-  if (bgmKey === key && !bgmEl.paused) return;
-
+  
+  // 同じBGMが既に再生中で、フェード処理中でない場合は何もしない
+  if (bgmKey === key && !bgmEl.paused && !isBGMChanging) return;
+  
+  // BGM切り替え処理中の場合は、新しいキーを待機キューに保存
+  if (isBGMChanging) {
+    pendingBGMKey = key;
+    return;
+  }
+  
+  // 既存のフェードタイマーをクリア
+  if (fadeOutTimer) { clearInterval(fadeOutTimer); fadeOutTimer = null; }
+  if (fadeInTimer) { clearInterval(fadeInTimer); fadeInTimer = null; }
+  
+  // 即座に停止してから新しいBGMを再生（フェードアウトをスキップして確実に停止）
+  const currentKey = bgmKey;
+  if (currentKey && currentKey !== key) {
+    try {
+      bgmEl.pause();
+      bgmEl.currentTime = 0;
+      bgmEl.volume = 0;
+    } catch(_) {}
+  }
+  
+  isBGMChanging = true;
+  pendingBGMKey = null;
+  
   const fadeOut = ()=>new Promise(res=>{
-    const id = setInterval(()=>{
-      bgmEl.volume = Math.max(0, bgmEl.volume - 0.05);
-      if (bgmEl.volume === 0){
-        clearInterval(id); res();
+    // 既に停止している場合は即座に解決
+    if (bgmEl.paused || bgmEl.volume === 0) {
+      res();
+      return;
+    }
+    
+    fadeOutTimer = setInterval(()=>{
+      bgmEl.volume = Math.max(0, bgmEl.volume - 0.1);
+      if (bgmEl.volume <= 0){
+        clearInterval(fadeOutTimer);
+        fadeOutTimer = null;
+        res();
       }
-    }, 80);
+    }, 50);
   });
 
   const fadeIn = ()=>{
-    const id = setInterval(()=>{
-      if (bgmEl.volume >= 0.55){ clearInterval(id); return; }
+    fadeInTimer = setInterval(()=>{
+      if (bgmEl.volume >= 0.55){
+        clearInterval(fadeInTimer);
+        fadeInTimer = null;
+        isBGMChanging = false;
+        
+        // 待機中のBGMがあれば再生
+        if (pendingBGMKey && pendingBGMKey !== bgmKey) {
+          setTimeout(() => playBGM(pendingBGMKey), 100);
+        }
+        return;
+      }
       bgmEl.volume = Math.min(0.55, bgmEl.volume + 0.05);
     }, 80);
   };
 
   fadeOut().then(()=>{
+    // stopBGM()が呼ばれた場合は処理を中断
+    if (bgmEl.src === '' && !pendingBGMKey) {
+      isBGMChanging = false;
+      return;
+    }
+    
+    // 待機中のBGMがあれば、それを使用
+    const targetKey = pendingBGMKey || key;
+    pendingBGMKey = null;
+    
     try{
       bgmEl.pause();
       bgmEl.currentTime = 0;
-      bgmEl.src = BGM[key];
+      bgmEl.src = BGM[targetKey];
       bgmEl.volume = 0;
       bgmEl.play().catch(()=>{});
-      bgmKey = key;
+      bgmKey = targetKey;
       fadeIn();
-    }catch(_){}
+    }catch(_){
+      isBGMChanging = false;
+    }
   });
 }
 
 function stopBGM(){
+  // フェードタイマーをクリア
+  if (fadeOutTimer) {
+    clearInterval(fadeOutTimer);
+    fadeOutTimer = null;
+  }
+  if (fadeInTimer) {
+    clearInterval(fadeInTimer);
+    fadeInTimer = null;
+  }
+  
+  // 処理中フラグをリセット
+  isBGMChanging = false;
+  pendingBGMKey = null;
+  
   try{
     bgmEl.pause();
     bgmEl.currentTime = 0;
+    bgmEl.volume = 0;
     bgmEl.src = '';     // 旧ソースを切断：重なり防止の決め手
   }catch(_){}
   bgmKey = '';
@@ -91,6 +165,8 @@ const bgEl        = document.getElementById('background');
 const speakerEl   = document.getElementById('speakerName');
 const mainTextEl  = document.getElementById('mainText');
 const choiceArea  = document.getElementById('choiceArea');
+const darkOverlay = document.getElementById('darkOverlay');
+const gameContainer = document.getElementById('gameContainer');
 
 const btnLog      = document.getElementById('btnLog');
 const btnDebug    = document.getElementById('btnDebug');
@@ -106,6 +182,12 @@ const dbgShadow = document.getElementById('dbgShadow');
 const dbgScenes = document.getElementById('dbgScenes');
 const dbgMax    = document.getElementById('dbgMax');
 
+// パラメータ表示パネル
+const paramPanel = document.getElementById('paramPanel');
+const paramEvid  = document.getElementById('paramEvid');
+const paramTrust = document.getElementById('paramTrust');
+const paramShadow = document.getElementById('paramShadow');
+
 // ===== 状態 =====
 let state, isRunning=false;
 let inOpening=true, opIndex=0;
@@ -115,6 +197,9 @@ let isEnding=false;
 // 選択後の短いやりとりキュー
 let _afterQueue = null;
 let _afterNext  = null;
+
+// 選択履歴（後悔要素用）
+let choicesHistory = [];
 
 // ===== 初期化 =====
 function init(){
@@ -126,11 +211,13 @@ function init(){
   };
   isRunning=false; inOpening=true; opIndex=-1; sceneIndex=-1; lineIndex=0;
   isEnding=false; _afterQueue=null; _afterNext=null;
+  choicesHistory=[];
 
   changeBackground(BG.title);
   setText('', 'クリック（タップ）で開始');
   choiceArea.innerHTML='';
   if (logPanel) logPanel.classList.remove('show');
+  if (paramPanel) paramPanel.classList.add('hidden');
   updateDebug();
 }
 init();
@@ -171,9 +258,103 @@ function setText(speaker,text){
   speakerEl.textContent = speaker || '';
   mainTextEl.classList.remove('fade'); void mainTextEl.offsetWidth; mainTextEl.classList.add('fade');
   mainTextEl.textContent = text || '';
+  
+  // 恐怖キーワードが含まれるテキストの場合、軽い恐怖演出と効果音
+  if(text && shouldTriggerFear({shadow:0}, text)){
+    // 強烈な恐怖キーワードの場合は効果音も追加
+    const intenseKeywords = ['影', '足音', '鏡', '声', '誰か', '見る', '確かめる', '覗く'];
+    if(intenseKeywords.some(kw => text.includes(kw))){
+      setTimeout(()=>{
+        playSE('EVENT_STING');
+        triggerFearEffect('normal');
+      }, 200);
+    } else {
+      setTimeout(()=>{
+        triggerFearEffect('normal');
+      }, 200);
+    }
+  }
 }
 function say(s,t){ setText(s,t); addLog(s||'ナレーション',t); }
 function addLog(speaker,text){ state.log.push({speaker,text}); }
+
+// ===== 恐怖演出（フラッシュ点滅なし） =====
+function triggerFearEffect(level='normal', playSound=true){
+  // level: 'normal', 'medium', 'intense'
+  // playSound: 効果音を再生するか（デフォルトtrue）
+  
+  if(level === 'intense'){
+    // 強烈な恐怖：画面揺れ + 暗転 + テキスト揺れ + 色変化
+    if(playSound) playSE('EVENT_STING');
+    gameContainer.classList.add('shake-screen');
+    if(darkOverlay) darkOverlay.classList.add('intense');
+    mainTextEl.classList.add('text-shake', 'intense-fear');
+    bgEl.classList.remove('normal', 'desaturate');
+    bgEl.classList.add('intense-desaturate');
+    
+    setTimeout(()=>{
+      gameContainer.classList.remove('shake-screen');
+      mainTextEl.classList.remove('text-shake');
+    }, 600);
+    
+    setTimeout(()=>{
+      if(darkOverlay) darkOverlay.classList.remove('intense');
+      mainTextEl.classList.remove('intense-fear');
+      bgEl.classList.remove('intense-desaturate');
+      bgEl.classList.add('normal');
+    }, 2000);
+    
+  } else if(level === 'medium'){
+    // 中程度の恐怖：軽い揺れ + 暗転 + テキスト色変化
+    if(playSound) playSE('EVENT_STING');
+    gameContainer.classList.add('shake-screen');
+    if(darkOverlay) darkOverlay.classList.add('active');
+    mainTextEl.classList.add('fear-text');
+    bgEl.classList.remove('normal', 'intense-desaturate');
+    bgEl.classList.add('desaturate');
+    
+    setTimeout(()=>{
+      gameContainer.classList.remove('shake-screen');
+    }, 600);
+    
+    setTimeout(()=>{
+      if(darkOverlay) darkOverlay.classList.remove('active');
+      mainTextEl.classList.remove('fear-text');
+      bgEl.classList.remove('desaturate');
+      bgEl.classList.add('normal');
+    }, 1500);
+    
+  } else {
+    // 軽い恐怖：テキスト揺れ + 色調変化（効果音は控えめ）
+    mainTextEl.classList.add('text-shake', 'slow-reveal');
+    bgEl.classList.remove('normal', 'intense-desaturate');
+    bgEl.classList.add('desaturate');
+    
+    setTimeout(()=>{
+      mainTextEl.classList.remove('text-shake');
+    }, 500);
+    
+    setTimeout(()=>{
+      mainTextEl.classList.remove('slow-reveal');
+      bgEl.classList.remove('desaturate');
+      bgEl.classList.add('normal');
+    }, 1200);
+  }
+}
+
+// 恐怖シーンの判定（shadow値や選択肢の内容から）
+function shouldTriggerFear(delta, text=''){
+  if(!delta) return false;
+  
+  // shadowが増加する選択肢は恐怖シーン
+  if(delta.shadow && delta.shadow > 0) return true;
+  
+  // テキストに恐怖キーワードが含まれる場合
+  const fearKeywords = ['影', '足音', '鏡', '声', '誰か', '見る', '確かめる', '覗く', '触る', '音', '戸', '灯', '井戸', '屋根裏'];
+  if(fearKeywords.some(kw => text.includes(kw))) return true;
+  
+  return false;
+}
 function toggleLog(force){
   if (!logPanel) return;
   const on = (typeof force==='boolean')? force : !logPanel.classList.contains('show');
@@ -196,15 +377,23 @@ function updateDebug(){
   dbgShadow.textContent = state.shadow;
   dbgScenes.textContent = state.scenesSeen;
   dbgMax.textContent    = state.maxScenes;
+  
+  // パラメータ表示パネルも更新
+  if (paramEvid) paramEvid.textContent = state.evid;
+  if (paramTrust) paramTrust.textContent = state.trust;
+  if (paramShadow) paramShadow.textContent = state.shadow;
 }
 
 // ===== スタート =====
 function start(){
   stopBGM();
   isRunning = true;
-  playBGM('WALTZ_SOFT');
+  // BGMはオープニングの最初の行で設定されるため、ここでは呼ばない
   changeBackground(BG.gate);
-  say('', '雨上がりの道を抜け、私は屋敷の門前に立った。');
+  if (paramPanel) paramPanel.classList.remove('hidden');
+  // オープニングの最初の行から開始（BGMも含めて）
+  opIndex = -1; // advanceOpening()で0になるように-1に設定
+  advanceOpening();
 }
 
 // ===== 進行 =====
@@ -223,12 +412,23 @@ function advanceLine(){
   if (inOpening) { advanceOpening(); return; }
 
   const sc = scenes[sceneIndex]; if (!sc) return;
+  
+  // linesが関数の場合は実行して動的に生成
+  const sceneLines = typeof sc.lines === 'function' 
+    ? sc.lines(choicesHistory, state) 
+    : sc.lines;
+  
   lineIndex++;
-  if (lineIndex < sc.lines.length){
-    const ln = sc.lines[lineIndex]; say(ln.speaker||'', ln.text||''); return;
+  if (lineIndex < sceneLines.length){
+    const ln = sceneLines[lineIndex]; say(ln.speaker||'', ln.text||''); return;
   }
-  if (sc.choices && sc.choices.length){
-    showChoices(sc, sc.choices);
+  // choicesが関数の場合は実行して動的に生成
+  const sceneChoices = typeof sc.choices === 'function'
+    ? sc.choices(choicesHistory, state)
+    : sc.choices;
+  
+  if (sceneChoices && sceneChoices.length){
+    showChoices(sc, sceneChoices);
   } else {
     if (endByFormula('即時判定')) return;
     gotoNextScene();
@@ -247,15 +447,33 @@ function showChoices(sc, list){
 
       applyDelta(c.delta||{});
       addLog(sc.lines[Math.max(0, sc.lines.length-1)].speaker||'', `[選択] ${c.label}`);
+      choicesHistory.push(c.label); // 選択履歴を記録
       if (c.se) playSE(c.se);
+
+      // 恐怖演出の判定と実行
+      const delta = c.delta || {};
+      const fearLevel = delta.shadow >= 2 ? 'intense' : (delta.shadow >= 1 ? 'medium' : 'normal');
+      if(shouldTriggerFear(delta, c.label)){
+        // 選択肢選択時は効果音が既に鳴っている可能性があるので、重複を避ける
+        const playSound = !c.se; // 選択肢に効果音が設定されていない場合のみ
+        setTimeout(()=>{
+          triggerFearEffect(fearLevel, playSound);
+        }, 100);
+      }
 
       const proceed = ()=>{
         if (endByFormula('即時判定')) return;
         gotoNextScene();
       };
 
-      if (c.after && c.after.length){
-        _afterQueue = c.after.slice();
+      // afterを処理（条件分岐対応）
+      let afterLines = c.after || [];
+      if (typeof c.after === 'function') {
+        afterLines = c.after(choicesHistory, state) || [];
+      }
+
+      if (afterLines && afterLines.length){
+        _afterQueue = afterLines.slice();
         _afterNext  = proceed;
         const first = _afterQueue.shift();
         say(first.speaker||'', first.text||'');
@@ -301,7 +519,10 @@ function advanceOpening(){
   if (opIndex < openingLines.length){
     const ln = openingLines[opIndex];
     if (ln.bg) changeBackground(ln.bg);
-    if (ln.bgm) playBGM(ln.bgm);
+    // BGMは異なる場合のみ再生（同じBGMが連続する場合はスキップ）
+    if (ln.bgm && ln.bgm !== bgmKey) {
+      playBGM(ln.bgm);
+    }
     say(ln.s||'', ln.t||''); return;
   }
   inOpening=false; gotoNextScene();
@@ -311,17 +532,75 @@ function advanceOpening(){
 function gotoNextScene(){
   if (state.scenesSeen >= state.maxScenes){ endByFormula('規定到達'); return; }
 
-  const pool = scenes.map((_,i)=>i).filter(i=>!state.visited.has(i));
-  const idx  = (pool.length>0) ? pool[Math.floor(Math.random()*pool.length)]
-                               : Math.floor(Math.random()*scenes.length);
+  // シーンを段階的に分類
+  // 導入（必須シーン、最初の4シーン）
+  // 展開（シーン5-12、中盤）
+  // クライマックス（シーン13以降、終盤）
+  
+  const required = scenes
+    .map((sc, i) => ({scene: sc, idx: i}))
+    .filter(({scene, idx}) => scene.required && !state.visited.has(idx));
+  
+  let idx;
+  
+  // 段階1: 導入（必須シーンを最初に）
+  if (required.length > 0 && state.scenesSeen < 4) {
+    idx = required[Math.floor(Math.random() * required.length)].idx;
+  }
+  // 段階2: 展開（シーン5-12、中盤）
+  else if (state.scenesSeen < 10) {
+    const developmentPool = scenes
+      .map((sc, i) => ({scene: sc, idx: i}))
+      .filter(({scene, idx}) => 
+        !state.visited.has(idx) && 
+        !scene.required && 
+        idx >= 4 && idx < 13
+      );
+    
+    if (developmentPool.length > 0) {
+      idx = developmentPool[Math.floor(Math.random() * developmentPool.length)].idx;
+    } else {
+      // 展開シーンがなくなったら、未訪問のシーンから選択
+      const pool = scenes.map((_,i)=>i).filter(i=>!state.visited.has(i) && !scenes[i].required);
+      idx = (pool.length>0) ? pool[Math.floor(Math.random()*pool.length)]
+                            : Math.floor(Math.random()*scenes.length);
+    }
+  }
+  // 段階3: クライマックス（シーン13以降、終盤）
+  else {
+    const climaxPool = scenes
+      .map((sc, i) => ({scene: sc, idx: i}))
+      .filter(({scene, idx}) => 
+        !state.visited.has(idx) && 
+        idx >= 13
+      );
+    
+    if (climaxPool.length > 0) {
+      idx = climaxPool[Math.floor(Math.random() * climaxPool.length)].idx;
+    } else {
+      // クライマックスシーンがなくなったら、未訪問のシーンから選択
+      const pool = scenes.map((_,i)=>i).filter(i=>!state.visited.has(i));
+      idx = (pool.length>0) ? pool[Math.floor(Math.random()*pool.length)]
+                            : Math.floor(Math.random()*scenes.length);
+    }
+  }
 
   state.visited.add(idx); state.scenesSeen++;
   sceneIndex = idx; lineIndex = 0;
 
   const sc = scenes[sceneIndex];
   if (sc.bg)  changeBackground(sc.bg);
-  if (sc.bgm) playBGM(sc.bgm);
-  const ln = sc.lines[lineIndex]; say(ln.speaker||'', ln.text||'');
+  // BGMは異なる場合のみ再生（同じBGMが連続する場合はスキップ）
+  if (sc.bgm && sc.bgm !== bgmKey) {
+    playBGM(sc.bgm);
+  }
+  
+  // linesが関数の場合は実行して動的に生成
+  const sceneLines = typeof sc.lines === 'function' 
+    ? sc.lines(choicesHistory, state) 
+    : sc.lines;
+  
+  const ln = sceneLines[lineIndex]; say(ln.speaker||'', ln.text||'');
   updateDebug();
 }
 
@@ -392,7 +671,10 @@ function endByFormula(reason){
 
 function showEnding(no, linesArr, bgmKey, hasHook){
   stopBGM();
-  playBGM(bgmKey);
+  // BGM停止後に少し待ってから新しいBGMを再生（確実に停止してから再生）
+  setTimeout(() => {
+    playBGM(bgmKey);
+  }, 100);
 
   const body = linesArr.join('\n');
   const tail = hasHook ? '（続きの気配がある）' : '（ここで終わり）';
@@ -401,6 +683,19 @@ function showEnding(no, linesArr, bgmKey, hasHook){
   changeBackground(BG.silhouette);
   setText('', fullText);
   choiceArea.innerHTML='';
+
+  // 恐怖エンディング（shadowが高い、または恐怖的な内容）の場合、演出を追加
+  const fearEndings = [5, 7]; // shadowが高いエンディング
+  if(fearEndings.includes(no)){
+    setTimeout(()=>{
+      triggerFearEffect('intense', true);
+    }, 500);
+  } else if(no === 2 || no === 3){
+    // 中程度の恐怖エンディング
+    setTimeout(()=>{
+      triggerFearEffect('medium', true);
+    }, 500);
+  }
 
   isRunning=false;
   isEnding=true;     // クリックで stopBGM()→init()
@@ -411,6 +706,7 @@ function showEnding(no, linesArr, bgmKey, hasHook){
 const scenes = [
   // 1 応接：匙の向き
   {
+    required: true, // 必須シーン
     bg: BG.living, bgm:'WALTZ_SOFT',
     lines:[
       {speaker:'私',   text:'スプーンの向きが、さっきと違う。'},
@@ -423,7 +719,7 @@ const scenes = [
         delta:{ trust:+1 },
         after:[
           {speaker:'私',   text:'艶が戻りました。'},
-          {speaker:'奥様', text:'助かるわ。光る物は“数”が目立つの。'}
+          {speaker:'奥様', text:'助かるわ。光る物は"数"が目立つの。'}
         ]
       },
       {
@@ -431,7 +727,8 @@ const scenes = [
         delta:{ evid:+1, trust:-1 }, se:'EVENT_STING',
         after:[
           {speaker:'私',   text:'一時的に預かります。'},
-          {speaker:'奥様', text:'預かるのは結構。でも、戻す場所は同じに。'}
+          {speaker:'奥様', text:'預かるのは結構。でも、戻す場所は同じに。'},
+          {speaker:'',     text:'（証拠を集めすぎると、誰かが気づくかもしれない）'}
         ]
       }
     ]
@@ -439,6 +736,7 @@ const scenes = [
 
   // 2 廊下：足音
   {
+    required: true, // 必須シーン
     bg: BG.hallway, bgm:'SUSPENSE_LOW',
     lines:[
       {speaker:'',     text:'コツ……コツ……。'},
@@ -451,9 +749,10 @@ const scenes = [
         delta:{ shadow:+1 }, se:'EVENT_STING',
         after:[
           {speaker:'私',   text:'角で途切れています。'},
-          {speaker:'静茶', text:'そこ、よく“薄くなる”んです。空気が。'},
+          {speaker:'静茶', text:'そこ、よく"薄くなる"んです。空気が。'},
           {speaker:'私',   text:'向こうと混ざる、ということ？'},
-          {speaker:'静茶', text:'はい。'}
+          {speaker:'静茶', text:'はい。'},
+          {speaker:'',     text:'（影は増え続ける。気づかないふりも、時には必要）'}
         ]
       },
       {
@@ -469,6 +768,7 @@ const scenes = [
 
   // 3 台所：濡れた紙切れ
   {
+    required: true, // 必須シーン
     bg: BG.kitchen, bgm:'EXPLORE',
     lines:[
       {speaker:'私',    text:'花瓶の底に……「見ている」の文字。'},
@@ -482,7 +782,8 @@ const scenes = [
         delta:{ evid:+1, shadow:+1 }, se:'EVENT_STING',
         after:[
           {speaker:'私',   text:'筆圧が浅い。急いで書いた跡。'},
-          {speaker:'静茶', text:'滲みも新しい。今夜のもの。'}
+          {speaker:'静茶', text:'滲みも新しい。今夜のもの。'},
+          {speaker:'',     text:'（証拠を集めすぎると、誰かが気づくかもしれない）'}
         ]
       },
       {
@@ -491,7 +792,8 @@ const scenes = [
         after:[
           {speaker:'私',   text:'濡れは拭きます。'},
           {speaker:'静茶', text:'……跡は残りますよ。跡から辿られることも。——それでも？'},
-          {speaker:'私',   text:'ええ。'}
+          {speaker:'私',   text:'ええ。'},
+          {speaker:'',     text:'（信頼は刃にもなる。しかし、見ないふりも時には必要）'}
         ]
       }
     ]
@@ -499,6 +801,7 @@ const scenes = [
 
   // 4 書斎：二つの筆跡
   {
+    required: true, // 必須シーン
     bg: BG.study, bgm:'EXPLORE',
     lines:[
       {speaker:'私',     text:'買い物リスト……墨が二種類。筆跡も違う。'},
@@ -512,7 +815,8 @@ const scenes = [
         after:[
           {speaker:'当主', text:'置いていけ。'},
           {speaker:'私',   text:'記録は私が控えます。'},
-          {speaker:'当主', text:'……忘れるな。'}
+          {speaker:'当主', text:'……忘れるな。'},
+          {speaker:'',     text:'（信頼は刃にもなる。しかし、見ないふりも時には必要）'}
         ]
       },
       {
@@ -520,7 +824,8 @@ const scenes = [
         delta:{ evid:+1, trust:-1, shadow:+1 },
         after:[
           {speaker:'',     text:'障子がわずかに鳴る。'},
-          {speaker:'私',   text:'（視線が増えた）'}
+          {speaker:'私',   text:'（視線が増えた）'},
+          {speaker:'',     text:'（証拠を集めすぎると、誰かが気づくかもしれない）'}
         ]
       }
     ]
@@ -597,7 +902,8 @@ const scenes = [
         delta:{ trust:+1, evid:+1 },
         after:[
           {speaker:'私',   text:'足跡は角で途切れます。灯も順に消えた。'},
-          {speaker:'奥様', text:'……わかりました。今夜は私が見張ります。あなたは戸を。'}
+          {speaker:'奥様', text:'……わかりました。今夜は私が見張ります。あなたは戸を。'},
+          {speaker:'',     text:'（証拠を整理して見せることで、新たな手がかりが見えてきた）'}
         ]
       },
       {
@@ -637,13 +943,25 @@ const scenes = [
     ]
   },
 
-  // 9 洗濯：見知らぬ衣（afterで自然化）
+  // 9 洗濯：見知らぬ衣（選択履歴に基づいて動的変化）
   {
     bg: BG.living, bgm:'EXPLORE',
-    lines:[
-      {speaker:'私',   text:'干していない衣が混ざっている。'},
-      {speaker:'奥様', text:'私のじゃないわ。'}
-    ],
+    lines: function(choicesHistory, state){
+      const baseLines = [
+        {speaker:'私',   text:'干していない衣が混ざっている。'},
+        {speaker:'奥様', text:'私のじゃないわ。'}
+      ];
+      
+      // シーン1で「ポケットにしまう」を選択した場合、追加のテキスト
+      if(choicesHistory.includes('ポケットにしまう')){
+        baseLines.push(
+          {speaker:'',     text:'ポケットからスプーンを取り出す。まだ温かい。'},
+          {speaker:'私',   text:'（証拠は集めているが、誰かが気づいているかもしれない）'}
+        );
+      }
+      
+      return baseLines;
+    },
     choices:[
       {
         label:'確認して返す',
@@ -685,7 +1003,8 @@ const scenes = [
         delta:{ trust:-1, shadow:+1 },
         after:[
           {speaker:'私',   text:'湿気が落ち着きます。'},
-          {speaker:'静茶', text:'足音も、入りやすくなりますけど。'}
+          {speaker:'静茶', text:'足音も、入りやすくなりますけど。'},
+          {speaker:'',     text:'（窓を開けることで、外からの気配が入りやすくなった。静茶の信頼は失われた）'}
         ]
       }
     ]
@@ -733,7 +1052,8 @@ const scenes = [
         delta:{ trust:+1, shadow:+1 },
         after:[
           {speaker:'私',   text:'箸は二度数えます。'},
-          {speaker:'奥様', text:'ええ。数は、嘘をつくから。'}
+          {speaker:'奥様', text:'ええ。数は、嘘をつくから。'},
+          {speaker:'',     text:'（余分な椀を受け入れることで、見えない存在を認めた。影が濃くなった）'}
         ]
       },
       {
